@@ -385,52 +385,39 @@ div[data-testid="stSelectbox"]>div>div {
     align-items: start !important;
 }
 
-/* ── BUTTON GAP FIX ──
-   Streamlit wraps every widget in [data-testid="element-container"] with margin.
-   We collapse that margin ONLY inside the main content area (not sidebar).
-   The selector targets element-containers that are direct children of
-   stVerticalBlock INSIDE stMain — excluding sidebar.              */
+/* Zero out all element-container padding in calendar columns */
 [data-testid="stMain"] [data-testid="column"]
-  [data-testid="stVerticalBlock"]
-  > [data-testid="element-container"] {
-    margin-top: 0 !important;
-    margin-bottom: 0 !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
+  [data-testid="element-container"] {
+    margin: 0 !important;
+    padding: 0 !important;
 }
 [data-testid="stMain"] [data-testid="column"]
   [data-testid="stVerticalBlock"] {
-    gap: 2px !important;
+    gap: 0 !important;
 }
 
-/* ── SMALL SQUARE BUTTONS (↑ ↓ ✕) ──
-   Only secondary buttons inside narrow columns get the small style.
-   Primary buttons (sidebar "Ekle" etc.) are excluded by [kind] attr. */
+/* ✕ delete button — small, square, no extra space */
 [data-testid="stMain"] [data-testid="column"]
   div[data-testid="stButton"] > button[kind="secondary"] {
-    width: 22px !important;
-    height: 22px !important;
+    width: 20px !important;
+    height: 20px !important;
     min-height: 0 !important;
     min-width: 0 !important;
     padding: 0 !important;
-    font-size: 0.58rem !important;
+    margin: 0 !important;
+    font-size: 0.52rem !important;
     line-height: 1 !important;
     border-radius: 4px !important;
     background: rgba(255,255,255,.03) !important;
-    border: 1px solid rgba(255,255,255,.09) !important;
-    color: #4e6070 !important;
+    border: 1px solid rgba(255,255,255,.08) !important;
+    color: #3e5060 !important;
     font-family: var(--mono) !important;
-    letter-spacing: 0 !important;
 }
 [data-testid="stMain"] [data-testid="column"]
   div[data-testid="stButton"] > button[kind="secondary"]:hover {
-    background: rgba(255,255,255,.1) !important;
-    color: #e8eef8 !important;
-    border-color: rgba(255,255,255,.22) !important;
-}
-[data-testid="stMain"] [data-testid="column"]
-  div[data-testid="stButton"] > button[kind="secondary"]:disabled {
-    opacity: 0.18 !important;
+    background: rgba(253,36,83,.12) !important;
+    color: #fd2453 !important;
+    border-color: rgba(253,36,83,.3) !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -590,14 +577,21 @@ for i, day in enumerate(week_days):
 
             action = None
 
-            for j, item in enumerate(items):
+            def sort_key(x):
+                c = x.get("cat", x.get("type",""))
+                if c == "difine": return 0
+                if c == "bromfc": return 1
+                return 2
+
+            items_sorted = sorted(items, key=sort_key)
+
+            for j, item in enumerate(items_sorted):
                 itype = item.get("type","manual")
                 icat  = item.get("cat", itype)
                 lbl   = CAT_LABEL.get(icat, icat.upper())
                 icon  = CAT_ICON.get(icat, "")
                 can_del = (itype != "auto")
 
-                # Status / badge
                 badge = ""; score_html = ""
                 if itype in ("auto","manual_match"):
                     st_ = item.get("status","notstarted")
@@ -621,13 +615,9 @@ for i, day in enumerate(week_days):
                                     badge = f"<span class='bdg bs'>{soon}</span>"
                             except: pass
 
-                # Player chips (auto only)
-                ch = chips_html(item.get("players",[])) if itype=="auto" else ""
-
-                # Sub line (manual_match only)
+                ch  = chips_html(item.get("players",[])) if itype=="auto" else ""
                 sub = f"<div class='isub'>{safe(item.get('sub',''))}</div>" if icat=="manual_match" else ""
 
-                # Main text — ESCAPED to prevent HTML injection
                 if itype == "auto":
                     main_txt = f"{safe(item.get('home','?'))} – {safe(item.get('away','?'))}"
                 else:
@@ -643,32 +633,21 @@ for i, day in enumerate(week_days):
                     f"</div></div>"
                 )
 
-                # Layout:
-                #   deletable  → [✕ | card | ↑↓]  cols [1, 11, 1]
-                #   auto only  → [card | ↑↓]       cols [12, 1]
                 if can_del:
-                    c_del, c_card, c_ud = st.columns([1, 11, 1])
+                    c_card, c_del = st.columns([12, 1])
+                    with c_card:
+                        st.markdown(card_html, unsafe_allow_html=True)
                     with c_del:
-                        if st.button("✕", key=f"x_{d_str}_{j}"):
-                            action = ("del", j)
+                        if st.button("✕", key=f"x_{d_str}_{item.get('id',j)}"):
+                            action = ("del", item.get("id"))
                 else:
-                    c_card, c_ud = st.columns([12, 1])
-
-                with c_card:
                     st.markdown(card_html, unsafe_allow_html=True)
 
-                with c_ud:
-                    if st.button("↑", key=f"u_{d_str}_{j}", disabled=(j==0)):
-                        action = ("up", j)
-                    if st.button("↓", key=f"d_{d_str}_{j}", disabled=(j==n-1)):
-                        action = ("down", j)
-
             if action:
-                act, j = action
+                act, eid = action
                 el = list(st.session_state.days.get(d_str,[]))
-                if act=="del": el.pop(j)
-                elif act=="up" and j>0: el[j],el[j-1]=el[j-1],el[j]
-                elif act=="down" and j<len(el)-1: el[j],el[j+1]=el[j+1],el[j]
+                if act == "del":
+                    el = [e for e in el if e.get("id") != eid]
                 st.session_state.days[d_str] = el
                 save_data(st.session_state.days); st.rerun()
 
