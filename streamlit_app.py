@@ -8,6 +8,7 @@ st.set_page_config(page_title="F41 · TAKVİM", layout="wide",
                    page_icon="📅", initial_sidebar_state="expanded")
 st_autorefresh(interval=60_000, key="cal_refresh")
 
+# ── CONSTANTS ────────────────────────────────────────────────────────────────
 TR_FULL   = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
 TR_SHORT  = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
 TR_MONTHS = {1:"Ocak",2:"Şubat",3:"Mart",4:"Nisan",5:"Mayıs",6:"Haziran",
@@ -30,46 +31,51 @@ TAKIP = [
 
 ENTRIES_FILE = "f41_entries.json"
 
+# ── HELPERS ──────────────────────────────────────────────────────────────────
 def get_week_days():
     t = datetime.date.today()
-    m = t - datetime.timedelta(days=t.weekday())
-    return [m + datetime.timedelta(days=i) for i in range(7)]
+    return [t - datetime.timedelta(days=t.weekday()) + datetime.timedelta(days=i) for i in range(7)]
 
 def get_week_id(): return get_week_days()[0].isoformat()
+
 def now_tr():
     return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
+
 def fmt_tr(d): return f"{d.day} {TR_MONTHS[d.month]}"
 
-def load_entries():
+# ── PERSISTENCE ──────────────────────────────────────────────────────────────
+def load_data():
     try:
         if os.path.exists(ENTRIES_FILE):
             with open(ENTRIES_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get("entries", {}), data.get("week_id", "")
+                return json.load(f)
     except: pass
-    return {}, ""
+    return {"week_id": "", "days": {}}
 
-def save_entries(entries):
+def save_data(days_dict):
     try:
         with open(ENTRIES_FILE, "w", encoding="utf-8") as f:
-            json.dump({"week_id": get_week_id(), "entries": entries},
+            json.dump({"week_id": get_week_id(), "days": days_dict},
                       f, ensure_ascii=False, indent=2)
     except: pass
 
+# ── SESSION INIT ─────────────────────────────────────────────────────────────
 if "initialized" not in st.session_state:
-    se, sw = load_entries()
-    cw = get_week_id()
-    st.session_state.update({
-        "entries": se, "week_id": sw,
-        "show_reset": (sw != "" and sw != cw),
-        "search_results": [], "search_matches": [],
-        "search_entity": None,
-        "photos": {}, "photos_loaded": False,
-        "initialized": True,
-    })
+    data = load_data()
+    cw   = get_week_id()
+    st.session_state.days          = data.get("days", {})
+    st.session_state.saved_week    = data.get("week_id", "")
+    st.session_state.show_reset    = (data.get("week_id","") not in ("", cw))
+    st.session_state.search_res    = []
+    st.session_state.search_match  = []
+    st.session_state.search_ent    = None
+    st.session_state.photos        = {}
+    st.session_state.photos_loaded = False
+    st.session_state.initialized   = True
 
+# ── PHOTOS ───────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=86400, show_spinner=False)
-def _fetch_photo(p_id):
+def _photo(p_id):
     try:
         r = cfreq.get(f"https://api.sofascore.app/api/v1/player/{p_id}/image",
                       headers={"Referer":"https://www.sofascore.com/"},
@@ -81,30 +87,30 @@ def _fetch_photo(p_id):
 
 def preload_photos():
     if st.session_state.photos_loaded: return
-    def one(t): return t["isim"], _fetch_photo(t["p_id"])
+    def one(t): return t["isim"], _photo(t["p_id"])
     with ThreadPoolExecutor(max_workers=10) as exe:
-        for f in as_completed([exe.submit(one, t) for t in TAKIP]):
+        for f in as_completed([exe.submit(one,t) for t in TAKIP]):
             try:
-                n, p = f.result()
-                st.session_state.photos[n] = p
+                n,p = f.result(); st.session_state.photos[n] = p
             except: pass
     st.session_state.photos_loaded = True
 
 preload_photos()
 
 def chips_html(names):
-    out = ""
-    for n in names[:4]:
-        src = st.session_state.photos.get(n, "")
+    h = ""
+    for n in (names or [])[:4]:
+        src = st.session_state.photos.get(n,"")
         if src:
-            out += f"<img class='pch' src='{src}' title='{n}'>"
+            h += f"<img class='pch' src='{src}' title='{n}'>"
         else:
             ini = "".join(x[0] for x in n.split()[:2])
-            out += f"<div class='pch pfb' title='{n}'>{ini}</div>"
-    if len(names) > 4:
-        out += f"<div class='pch pfb'>+{len(names)-4}</div>"
-    return f"<div class='pchips'>{out}</div>" if names else ""
+            h += f"<span class='pch pfb'>{ini}</span>"
+    if len(names or []) > 4:
+        h += f"<span class='pch pfb'>+{len(names)-4}</span>"
+    return f"<div class='pchips'>{h}</div>" if names else ""
 
+# ── API: WEEK MATCHES ────────────────────────────────────────────────────────
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_week(week_start):
     ws = datetime.date.fromisoformat(week_start)
@@ -129,13 +135,13 @@ def fetch_week(week_start):
                               + datetime.timedelta(hours=3))
                         d = dt.date()
                         if not (ws <= d <= we): continue
-                        eid = ev["id"]
+                        eid = str(ev["id"])
                         st_ = ev.get("status",{}).get("type","notstarted")
                         sh  = ev.get("homeScore",{}).get("current","")
                         sa  = ev.get("awayScore",{}).get("current","")
                         sc  = f"{sh}–{sa}" if st_!="notstarted" and sh!="" else ""
                         if eid not in by_ev:
-                            by_ev[eid] = {"date":d.isoformat(),
+                            by_ev[eid] = {"eid":eid,"date":d.isoformat(),
                                 "home":ev.get("homeTeam",{}).get("shortName","?"),
                                 "away":ev.get("awayTeam",{}).get("shortName","?"),
                                 "time":dt.strftime("%H:%M"),
@@ -159,27 +165,23 @@ def sofa_search(q):
                       impersonate="chrome110", timeout=8).json()
         res = []
         for item in r.get("results",[])[:15]:
-            e = item.get("entity",{})
-            t = item.get("type","")
+            e = item.get("entity",{}); t = item.get("type","")
             s = (e.get("sport") or {}).get("slug","")
             if t=="player" and s=="football":
                 team = e.get("team",{})
                 res.append({"type":"player","label":f"👤 {e.get('name','')}",
-                    "name":e.get("name",""),
-                    "t_id":str(team.get("id","")),
+                    "name":e.get("name",""),"t_id":str(team.get("id","")),
                     "t_name":team.get("shortName",team.get("name",""))})
             elif t=="team" and s=="football":
                 res.append({"type":"team","label":f"🏟 {e.get('name','')}",
-                    "name":e.get("name",""),
-                    "t_id":str(e.get("id","")),
+                    "name":e.get("name",""),"t_id":str(e.get("id","")),
                     "t_name":e.get("shortName",e.get("name",""))})
         return res[:8]
     except: return []
 
 @st.cache_data(ttl=120, show_spinner=False)
 def team_week_matches(t_id, week_start):
-    ws = datetime.date.fromisoformat(week_start)
-    we = ws + datetime.timedelta(days=6)
+    ws = datetime.date.fromisoformat(week_start); we = ws + datetime.timedelta(days=6)
     seen = {}
     for p in ["next","last"]:
         try:
@@ -198,248 +200,242 @@ def team_week_matches(t_id, week_start):
                         "away":ev.get("awayTeam",{}).get("shortName","?"),
                         "time":dt.strftime("%H:%M"),"status":st_,
                         "score":f"{sh}–{sa}" if st_!="notstarted" and sh!="" else "",
-                        "event_id":ev["id"]}
+                        "eid":str(ev["id"])}
         except: pass
     return sorted(seen.values(), key=lambda x: x["date"])
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
+# ── SYNC: merge API matches into stored day list ──────────────────────────────
+def sync_day(d_str, api_list):
+    """
+    Merge fresh API match data into stored day list.
+    - Auto items already in list: update score/status/players
+    - New API matches not yet in list: insert in time order
+    - Manual entries: untouched
+    Returns updated list.
+    """
+    stored = list(st.session_state.days.get(d_str, []))
+    stored_eids = {item["eid"] for item in stored if item.get("type") == "auto"}
+
+    # Update existing auto items
+    api_map = {m["eid"]: m for m in api_list}
+    for item in stored:
+        if item.get("type") == "auto" and item["eid"] in api_map:
+            m = api_map[item["eid"]]
+            item["status"]  = m["status"]
+            item["score"]   = m["score"]
+            item["players"] = m["players"]
+
+    # Add new auto matches (not yet stored)
+    for m in api_list:
+        if m["eid"] not in stored_eids:
+            new_item = {
+                "type": "auto", "eid": m["eid"],
+                "home": m["home"], "away": m["away"],
+                "time": m["time"], "status": m["status"],
+                "score": m["score"], "players": m["players"],
+            }
+            # Insert after last auto item with earlier time
+            insert_at = len(stored)
+            for idx, item in enumerate(stored):
+                if item.get("type") == "auto" and item.get("time","99:99") > m["time"]:
+                    insert_at = idx
+                    break
+            stored.insert(insert_at, new_item)
+
+    return stored
+
+# ── CSS ──────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap');
 
 :root {
-    --bg:#07070e; --sf:#0c0c15; --s2:#10101a;
-    --br:rgba(255,255,255,0.06); --br2:rgba(255,255,255,0.10);
-    --tx:#b4c2d6; --bright:#ebf0f8; --mu:#3c4a5e; --su:#5e7080;
+    --bg:#07070d; --sf:#0b0b14; --s2:#0f0f19;
+    --br:rgba(255,255,255,0.07); --br2:rgba(255,255,255,0.11);
+    --tx:#aebbd0; --bright:#e8eef8; --mu:#3a4858; --su:#566070;
     --green:#22c55e; --red:#fd2453; --blue:#3b82f6; --amber:#f59e0b;
     --body:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
 }
 
-/* ── BASE ── */
 html,body,.stApp { background:var(--bg)!important; color:var(--tx); font-family:var(--body); }
-.block-container  { padding:1rem 1.2rem 3rem!important; max-width:1800px!important; }
-
-/* ── SIDEBAR ── */
+.block-container  { padding:1rem 1rem 3rem!important; max-width:1800px!important; }
 [data-testid="stSidebar"] {
     background:var(--sf)!important;
     border-right:1px solid var(--br)!important;
 }
-[data-testid="stSidebarContent"] { padding:1.2rem 0.9rem; }
+[data-testid="stSidebarContent"] { padding:1.1rem 0.85rem; }
+
+/* remove streamlit default element gaps */
+.stVerticalBlock { gap:0!important; }
+[data-testid="stVerticalBlockBorderWrapper"] { padding:0!important; }
 
 /* ── MASTHEAD ── */
 .mhw {
     display:flex; align-items:center; justify-content:space-between;
-    padding:14px 0 12px;
-    border-bottom:1px solid var(--br);
-    margin-bottom:10px;
+    padding:12px 0 10px; border-bottom:1px solid var(--br); margin-bottom:9px;
 }
-.mht { font-family:var(--mono); font-size:0.6rem; font-weight:700;
-    letter-spacing:0.22em; text-transform:uppercase; color:var(--su); }
-.mht b { color:var(--bright); font-size:1.0rem; letter-spacing:0.08em; }
-.mhs { font-family:var(--mono); font-size:0.56rem; color:var(--mu); margin-top:2px; }
-.mhr { font-family:var(--mono); font-size:0.55rem; color:var(--mu);
-    text-align:right; line-height:1.9; }
-.mhr span { color:var(--su); }
+.mht { font-family:var(--mono); font-size:0.58rem; font-weight:700;
+    letter-spacing:0.2em; text-transform:uppercase; color:var(--su); }
+.mht b { color:var(--bright); font-size:0.95rem; letter-spacing:0.07em; }
+.mhs { font-family:var(--mono); font-size:0.54rem; color:var(--mu); margin-top:2px; }
+.mhr { font-family:var(--mono); font-size:0.53rem; color:var(--mu); text-align:right; line-height:1.85; }
+.mhr b { color:var(--su); }
 
-/* ── SUMMARY PILLS ── */
-.sstrip { display:flex; gap:5px; padding:6px 0 12px; flex-wrap:wrap; }
+/* ── SUMMARY ── */
+.sstrip { display:flex; gap:4px; padding:5px 0 11px; flex-wrap:wrap; }
 .sp {
-    display:inline-flex; align-items:center; gap:5px;
-    padding:4px 10px; border-radius:100px; border:1px solid;
-    font-family:var(--mono); font-size:0.58rem; font-weight:700;
-    letter-spacing:0.05em; white-space:nowrap;
+    display:inline-flex; align-items:center; gap:5px; padding:4px 9px;
+    border-radius:100px; border:1px solid; font-family:var(--mono);
+    font-size:0.57rem; font-weight:700; letter-spacing:0.04em; white-space:nowrap;
 }
-.sm { color:#22c55e; border-color:rgba(34,197,94,.2);  background:rgba(34,197,94,.06); }
-.sd { color:#fd2453; border-color:rgba(253,36,83,.2);  background:rgba(253,36,83,.06); }
-.sb { color:#3b82f6; border-color:rgba(59,130,246,.2); background:rgba(59,130,246,.06); }
-.sl { color:#fd2453; border-color:rgba(253,36,83,.35); background:rgba(253,36,83,.08);
-    animation:pp 2s ease-in-out infinite; }
-@keyframes pp {
-    0%,100% { box-shadow:0 0 0 0 rgba(253,36,83,.25); }
-    50%      { box-shadow:0 0 0 5px rgba(253,36,83,0); }
-}
-.sdot { width:5px; height:5px; border-radius:50%; background:currentColor; flex-shrink:0; }
+.sm{color:#22c55e;border-color:rgba(34,197,94,.2);background:rgba(34,197,94,.06);}
+.sd{color:#fd2453;border-color:rgba(253,36,83,.2);background:rgba(253,36,83,.06);}
+.sb{color:#3b82f6;border-color:rgba(59,130,246,.2);background:rgba(59,130,246,.06);}
+.sl{color:#fd2453;border-color:rgba(253,36,83,.35);background:rgba(253,36,83,.08);
+    animation:ppulse 2s ease-in-out infinite;}
+@keyframes ppulse{0%,100%{box-shadow:0 0 0 0 rgba(253,36,83,.25);}50%{box-shadow:0 0 0 4px rgba(253,36,83,0);}}
+.sdot{width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0;}
 
 /* ── DAY HEADER ── */
-.dh { padding:8px 10px; border-bottom:1px solid var(--br); margin-bottom:6px; }
-.dhn { font-weight:700; font-size:0.67rem; color:var(--su); }
-.dhd { font-family:var(--mono); font-size:0.53rem; color:var(--mu); margin-top:1px; }
-.dht .dhn { color:var(--blue); }
-.dht .dhd { color:rgba(59,130,246,.42); }
-.tpip {
-    display:inline-block; width:4px; height:4px; border-radius:50%;
-    background:var(--blue); margin-left:4px; vertical-align:middle;
-    animation:pip 2s ease-in-out infinite;
-}
-@keyframes pip { 0%,100%{opacity:1;} 50%{opacity:0.15;} }
+.dh{padding:7px 9px;border-bottom:1px solid var(--br);margin-bottom:5px;}
+.dhn{font-weight:700;font-size:0.66rem;color:var(--su);}
+.dhd{font-family:var(--mono);font-size:0.52rem;color:var(--mu);margin-top:1px;}
+.dht .dhn{color:var(--blue);}
+.dht .dhd{color:rgba(59,130,246,.4);}
+.tpip{display:inline-block;width:4px;height:4px;border-radius:50%;
+    background:var(--blue);margin-left:4px;vertical-align:middle;
+    animation:pip 2s ease-in-out infinite;}
+@keyframes pip{0%,100%{opacity:1;}50%{opacity:0.15;}}
 
-/* ── AUTO MATCH CARD ── */
-.acard {
-    padding:6px 8px 7px;
-    border-radius:6px;
-    margin-bottom:4px;
-    border-left:2.5px solid #22c55e;
-    background:rgba(34,197,94,.065);
+/* ── ITEM CARD (unified) ── */
+.icard {
+    display:flex; align-items:stretch;
+    border-radius:6px; margin-bottom:3px;
+    overflow:hidden; position:relative;
 }
-.albl {
-    font-family:var(--mono); font-size:0.46rem; letter-spacing:0.09em;
-    text-transform:uppercase; margin-bottom:2px; opacity:0.42;
+/* left accent */
+.iacc { width:3px; flex-shrink:0; }
+.iacc-auto   { background:#22c55e; }
+.iacc-difine { background:#fd2453; }
+.iacc-bromfc { background:#3b82f6; }
+.iacc-manual_match { background:#22c55e; }
+
+/* body */
+.ibody { flex:1; padding:5px 7px; min-width:0; background:rgba(255,255,255,.025); }
+.icat {
+    font-family:var(--mono); font-size:0.44rem; letter-spacing:0.09em;
+    text-transform:uppercase; opacity:0.38; margin-bottom:1px;
     display:flex; align-items:center; gap:4px; flex-wrap:nowrap;
 }
-.atxt { font-weight:600; color:var(--bright); font-size:0.65rem; line-height:1.35; }
+.icat-auto   { color:#22c55e; }
+.icat-difine { color:#fd2453; }
+.icat-bromfc { color:#3b82f6; }
+.icat-manual_match { color:#22c55e; }
+.itxt { font-weight:600; color:var(--bright); font-size:0.64rem;
+    line-height:1.3; overflow-wrap:break-word; word-break:break-word; }
+.isub { color:var(--mu); font-size:0.53rem; margin-top:2px; }
 
-/* ── BADGES — critical: white-space nowrap ── */
+/* ── BADGES ── */
 .bdg {
-    display:inline-flex; align-items:center; gap:2px;
-    padding:1px 5px; border-radius:3px;
-    font-family:var(--mono); font-size:0.46rem; font-weight:700;
-    letter-spacing:0.04em; vertical-align:middle;
-    white-space:nowrap; flex-shrink:0;
+    display:inline-flex; align-items:center; gap:2px; padding:1px 4px;
+    border-radius:3px; font-family:var(--mono); font-size:0.44rem;
+    font-weight:700; letter-spacing:0.04em; white-space:nowrap; flex-shrink:0;
 }
-.bl {
-    color:#fd2453; background:rgba(253,36,83,.11);
-    border:1px solid rgba(253,36,83,.28);
-    animation:blink 1.4s ease-in-out infinite;
-}
-@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
-.bd { color:#22c55e; background:rgba(34,197,94,.09); border:1px solid rgba(34,197,94,.2); }
-.bs { color:#f59e0b; background:rgba(245,158,11,.09); border:1px solid rgba(245,158,11,.2); }
-.lsc { font-family:var(--mono); font-weight:700; color:var(--bright); font-size:0.66rem; }
+.bl{color:#fd2453;background:rgba(253,36,83,.11);border:1px solid rgba(253,36,83,.28);
+    animation:blink 1.4s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}
+.bd{color:#22c55e;background:rgba(34,197,94,.09);border:1px solid rgba(34,197,94,.2);}
+.bs{color:#f59e0b;background:rgba(245,158,11,.09);border:1px solid rgba(245,158,11,.2);}
+.lsc{font-family:var(--mono);font-weight:700;color:var(--bright);font-size:0.64rem;}
 
 /* ── PLAYER CHIPS ── */
-.pchips { display:flex; align-items:center; margin-top:4px; }
-.pch {
-    width:19px; height:19px; border-radius:50%; object-fit:cover;
-    border:1.5px solid rgba(34,197,94,.28); margin-right:-4px;
-    background:var(--s2); flex-shrink:0; transition:transform .12s;
-}
-.pch:hover { transform:scale(1.2); z-index:2; }
-.pfb {
-    display:inline-flex!important; align-items:center; justify-content:center;
-    font-family:var(--mono); font-size:0.4rem; font-weight:700;
-    color:var(--su); border:1.5px solid var(--br2);
-}
+.pchips{display:flex;align-items:center;margin-top:4px;padding-left:1px;}
+.pch{width:18px;height:18px;border-radius:50%;object-fit:cover;
+    border:1.5px solid rgba(34,197,94,.25);margin-right:-3px;
+    background:var(--s2);flex-shrink:0;}
+.pfb{display:inline-flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:0.38rem;font-weight:700;
+    color:var(--su);border:1.5px solid var(--br2);}
 
-/* ── MANUAL ENTRY CARD ── */
-.mcard {
-    display:flex; align-items:stretch;
-    border-radius:6px; margin-bottom:4px;
-    overflow:hidden; border:1px solid var(--br2);
-    transition:border-color .12s;
-}
-.mcard:hover { border-color:rgba(255,255,255,.16); }
-
-.mac { width:3px; flex-shrink:0; }
-.mac-difine      { background:#fd2453; }
-.mac-bromfc      { background:#3b82f6; }
-.mac-manual_match{ background:#22c55e; }
-
-.mhandle {
-    width:18px; flex-shrink:0;
-    display:flex; align-items:center; justify-content:center;
-    cursor:ns-resize; opacity:0.18; transition:opacity .12s;
-    font-size:0.62rem; color:var(--su);
-    letter-spacing:-1px; user-select:none;
-    background:rgba(255,255,255,.012);
-}
-.mcard:hover .mhandle { opacity:0.45; }
-
-.mbody { flex:1; padding:5px 7px; min-width:0; }
-.mcat {
-    font-family:var(--mono); font-size:0.45rem; letter-spacing:0.09em;
-    text-transform:uppercase; opacity:0.4; margin-bottom:1px;
-}
-.mcat-difine      { color:#fd2453; }
-.mcat-bromfc      { color:#3b82f6; }
-.mcat-manual_match{ color:#22c55e; }
-.mtxt {
-    font-weight:600; color:var(--bright); font-size:0.65rem;
-    line-height:1.35; word-break:break-word;
-}
-.msub { color:var(--mu); font-size:0.55rem; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-
-/* ── MOVE / DELETE BUTTON COLUMN ── */
-.mbtns-col {
-    display:flex; flex-direction:column;
-    align-items:center; justify-content:center;
-    padding:3px 4px; gap:2px; flex-shrink:0;
-}
-
-/* Override Streamlit buttons inside .mbtns-col */
-.mbtns-col div[data-testid="stButton"] > button {
-    width:16px!important;
-    height:16px!important;
-    min-height:0!important;
-    min-width:0!important;
-    padding:0!important;
-    margin:0!important;
-    font-size:0.5rem!important;
-    line-height:1!important;
+/* ── REORDER BUTTONS ── */
+/* These are Streamlit buttons rendered in narrow columns next to each card */
+div[data-testid="stButton"].reorder-btn > button {
+    width:18px!important; height:18px!important;
+    min-height:0!important; min-width:0!important;
+    padding:0!important; margin:0!important;
+    font-size:0.52rem!important; line-height:1!important;
     border-radius:3px!important;
-    background:transparent!important;
+    background:rgba(255,255,255,.03)!important;
     border:1px solid var(--br2)!important;
     color:var(--mu)!important;
-    display:flex!important;
-    align-items:center!important;
-    justify-content:center!important;
 }
-.mbtns-col div[data-testid="stButton"] > button:hover {
-    background:rgba(255,255,255,.08)!important;
+div[data-testid="stButton"].reorder-btn > button:hover {
+    background:rgba(255,255,255,.09)!important;
     color:var(--bright)!important;
-    border-color:rgba(255,255,255,.18)!important;
+    border-color:rgba(255,255,255,.2)!important;
 }
 
-/* ── SIDEBAR STYLES ── */
-.sbt { font-family:var(--mono); font-size:0.52rem; letter-spacing:0.16em;
-    text-transform:uppercase; color:var(--mu); }
-.sbt b { color:var(--bright); font-size:0.74rem; }
-.sbl { font-family:var(--mono); font-size:0.53rem; font-weight:700;
-    letter-spacing:0.1em; text-transform:uppercase; color:var(--mu);
-    margin-bottom:5px; margin-top:10px; }
-.legr { display:flex; align-items:center; gap:6px; font-size:0.59rem;
-    color:var(--mu); margin-bottom:4px; }
-.legp { width:6px; height:6px; border-radius:2px; flex-shrink:0; }
+/* ── SIDEBAR ── */
+.sbt{font-family:var(--mono);font-size:0.51rem;letter-spacing:0.15em;text-transform:uppercase;color:var(--mu);}
+.sbt b{color:var(--bright);font-size:0.72rem;}
+.sbl{font-family:var(--mono);font-size:0.52rem;font-weight:700;letter-spacing:0.1em;
+    text-transform:uppercase;color:var(--mu);margin-bottom:5px;margin-top:10px;}
+.legr{display:flex;align-items:center;gap:6px;font-size:0.58rem;color:var(--mu);margin-bottom:4px;}
+.legp{width:6px;height:6px;border-radius:2px;flex-shrink:0;}
 
-/* Global Streamlit overrides */
-div[data-testid="stRadio"] label { font-size:0.68rem!important; }
+/* global overrides */
+div[data-testid="stRadio"] label{font-size:0.67rem!important;}
 div[data-testid="stTextInput"] input,
-div[data-testid="stTextArea"] textarea {
-    background:var(--s2)!important; border-color:var(--br2)!important;
-    color:var(--tx)!important; font-size:0.68rem!important;
-}
-div[data-testid="stSelectbox"] > div > div {
-    background:var(--s2)!important; border-color:var(--br2)!important;
-    font-size:0.68rem!important;
-}
-div[data-testid="stButton"] > button {
-    font-family:var(--mono)!important;
-    font-size:0.6rem!important;
-    letter-spacing:0.03em;
-}
+div[data-testid="stTextArea"] textarea{
+    background:var(--s2)!important;border-color:var(--br2)!important;
+    color:var(--tx)!important;font-size:0.67rem!important;}
+div[data-testid="stSelectbox"]>div>div{
+    background:var(--s2)!important;border-color:var(--br2)!important;font-size:0.67rem!important;}
+div[data-testid="stButton"]>button{
+    font-family:var(--mono)!important;font-size:0.59rem!important;letter-spacing:0.03em;}
 </style>
 """, unsafe_allow_html=True)
 
-# ── RUNTIME DATA ──────────────────────────────────────────────────────────────
+# ── RUNTIME ──────────────────────────────────────────────────────────────────
 week_days    = get_week_days()
 today        = datetime.date.today()
-auto_matches = fetch_week(week_days[0].isoformat())
+api_matches  = fetch_week(week_days[0].isoformat())
 nw           = now_tr()
 cw           = get_week_id()
 
-# ── RESET BANNER ──────────────────────────────────────────────────────────────
+# Sync all days: merge fresh API data into stored lists
+days_changed = False
+for day in week_days:
+    d = day.isoformat()
+    api_day = api_matches.get(d, [])
+    current  = st.session_state.days.get(d, [])
+    merged   = sync_day(d, api_day)
+    if merged != current:
+        st.session_state.days[d] = merged
+        days_changed = True
+
+if days_changed:
+    save_data(st.session_state.days)
+
+# ── RESET BANNER ─────────────────────────────────────────────────────────────
 if st.session_state.show_reset:
-    st.warning("⚠️ **Yeni hafta başladı.** Difine ve BromFC girişleri temizlensin mi?")
+    st.warning("⚠️ **Yeni hafta başladı.** Manuel girişler temizlensin mi?")
     ca, cb, _ = st.columns([3,3,8])
     if ca.button("✓  Temizle, yeni haftaya geç", type="primary"):
-        st.session_state.entries={}; st.session_state.week_id=cw
-        st.session_state.show_reset=False; save_entries({}); st.rerun()
+        # Keep only auto items, wipe manual
+        for d in st.session_state.days:
+            st.session_state.days[d] = [
+                x for x in st.session_state.days[d] if x.get("type") == "auto"
+            ]
+        st.session_state.show_reset = False
+        save_data(st.session_state.days); st.rerun()
     if cb.button("Daha sonra"):
-        st.session_state.show_reset=False; st.rerun()
+        st.session_state.show_reset = False; st.rerun()
 
-# ── SIDEBAR ───────────────────────────────────────────────────────────────────
+# ── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("<div class='sbt'><b>F41 · TAKVİM</b></div>"
-                "<div style='font-family:var(--mono);font-size:0.49rem;color:#181e2a;"
+                "<div style='font-family:var(--mono);font-size:0.47rem;color:#141b26;"
                 "letter-spacing:0.09em;margin-bottom:9px;'>YÖNETİM PANELİ</div>",
                 unsafe_allow_html=True)
     st.divider()
@@ -462,40 +458,41 @@ with st.sidebar:
         if st.button("🔍  Ara", use_container_width=True):
             if sq.strip():
                 with st.spinner("Aranıyor..."):
-                    st.session_state.search_results = sofa_search(sq.strip())
-                    st.session_state.search_entity  = None
-                    st.session_state.search_matches  = []
+                    st.session_state.search_res   = sofa_search(sq.strip())
+                    st.session_state.search_ent   = None
+                    st.session_state.search_match  = []
 
-        if st.session_state.search_results:
+        if st.session_state.search_res:
             st.markdown("<div class='sbl'>Sonuçlar</div>", unsafe_allow_html=True)
-            for idx, res in enumerate(st.session_state.search_results):
-                lbl = (f"{res['label']} · {res['t_name']}"
-                       if res["type"]=="player" else res["label"])
+            for idx, res in enumerate(st.session_state.search_res):
+                lbl = (f"{res['label']} · {res['t_name']}" if res["type"]=="player" else res["label"])
                 if st.button(lbl, key=f"sr_{idx}", use_container_width=True):
                     with st.spinner("Maçlar yükleniyor..."):
                         ml = team_week_matches(res["t_id"], week_days[0].isoformat())
-                        st.session_state.search_matches = ml
-                        st.session_state.search_entity  = res
-                        st.session_state.search_results = []
+                        st.session_state.search_match = ml
+                        st.session_state.search_ent   = res
+                        st.session_state.search_res   = []
 
-        if st.session_state.search_matches:
-            ent = st.session_state.search_entity or {}
+        if st.session_state.search_match:
+            ent = st.session_state.search_ent or {}
             st.markdown(f"<div class='sbl'>{ent.get('name','')} — Bu Hafta</div>",
                         unsafe_allow_html=True)
-            for midx, m in enumerate(st.session_state.search_matches):
+            for midx, m in enumerate(st.session_state.search_match):
                 stxt = f" {m['score']}" if m["score"] else f" {m['time']}"
                 icon = "🔴" if m["status"]=="inprogress" else ("✅" if m["status"]=="finished" else "📅")
                 if st.button(f"{icon} {m['day'][:3]} · {m['home']} – {m['away']}{stxt}",
                              key=f"madd_{midx}", use_container_width=True, type="primary"):
                     d = m["date"]
-                    st.session_state.entries.setdefault(d,[]).append({
+                    new_item = {
+                        "type":"manual_match","id":uuid.uuid4().hex[:8],
                         "cat":"manual_match",
                         "text":f"{m['home']} – {m['away']}",
                         "sub":f"{m['time']} · {ent.get('name','')}",
-                        "time":m["time"],"status":m["status"],
-                        "score":m.get("score",""),"id":uuid.uuid4().hex[:8]})
-                    save_entries(st.session_state.entries)
-                    st.session_state.search_matches=[]; st.session_state.search_entity=None
+                        "time":m["time"],"status":m["status"],"score":m.get("score",""),
+                    }
+                    st.session_state.days.setdefault(d,[]).append(new_item)
+                    save_data(st.session_state.days)
+                    st.session_state.search_match=[]; st.session_state.search_ent=None
                     st.rerun()
     else:
         st.markdown("<div class='sbl'>Not / Görev</div>", unsafe_allow_html=True)
@@ -504,9 +501,10 @@ with st.sidebar:
         if st.button("➕  Takvime Ekle", use_container_width=True, type="primary"):
             if etxt.strip():
                 d = sday.isoformat()
-                st.session_state.entries.setdefault(d,[]).append({
-                    "cat":cat,"text":etxt.strip(),"id":uuid.uuid4().hex[:8]})
-                save_entries(st.session_state.entries); st.rerun()
+                st.session_state.days.setdefault(d,[]).append({
+                    "type":"manual","id":uuid.uuid4().hex[:8],
+                    "cat":cat,"text":etxt.strip()})
+                save_data(st.session_state.days); st.rerun()
 
     st.divider()
     st.markdown("""
@@ -517,22 +515,23 @@ with st.sidebar:
     <div class='legr'><div class='legp' style='background:#3b82f6;'></div>
         <span><b style='color:#3b82f6;'>BromFC</b></span></div>
     """, unsafe_allow_html=True)
-    st.markdown(f"<div style='margin-top:11px;font-family:var(--mono);font-size:0.48rem;"
-                f"color:#0d131e;'>{nw.strftime('%H:%M:%S')} · 60sn</div>",
+    st.markdown(f"<div style='margin-top:10px;font-family:var(--mono);font-size:0.47rem;"
+                f"color:#0c1220;'>{nw.strftime('%H:%M:%S')} · 60sn</div>",
                 unsafe_allow_html=True)
 
-# ── SUMMARY ───────────────────────────────────────────────────────────────────
-tm = sum(len(v) for v in auto_matches.values())
-for v in st.session_state.entries.values():
-    tm += sum(1 for e in v if e.get("cat")=="manual_match")
-td = sum(sum(1 for e in v if e.get("cat")=="difine")
-         for v in st.session_state.entries.values())
-tb = sum(sum(1 for e in v if e.get("cat")=="bromfc")
-         for v in st.session_state.entries.values())
-tl = sum(sum(1 for m in v if m.get("status")=="inprogress")
-         for v in auto_matches.values())
-for v in st.session_state.entries.values():
-    tl += sum(1 for e in v if e.get("cat")=="manual_match" and e.get("status")=="inprogress")
+# ── SUMMARY ──────────────────────────────────────────────────────────────────
+def count_type(t): return sum(
+    sum(1 for i in v if i.get("type")==t or i.get("cat")==t)
+    for v in st.session_state.days.values())
+
+tm = sum(sum(1 for i in v if i.get("type") in ("auto","manual_match"))
+         for v in st.session_state.days.values())
+td = sum(sum(1 for i in v if i.get("cat")=="difine")
+         for v in st.session_state.days.values())
+tb = sum(sum(1 for i in v if i.get("cat")=="bromfc")
+         for v in st.session_state.days.values())
+tl = sum(sum(1 for i in v if i.get("status")=="inprogress")
+         for v in st.session_state.days.values())
 
 st.markdown(f"""
 <div class='mhw'>
@@ -541,8 +540,7 @@ st.markdown(f"""
         <div class='mhs'>{fmt_tr(week_days[0])} — {fmt_tr(week_days[6])} {week_days[6].year}</div>
     </div>
     <div class='mhr'>
-        <span>{TR_FULL[nw.weekday()]}, {fmt_tr(nw.date())} {nw.year}</span><br>
-        {nw.strftime('%H:%M')}
+        <b>{TR_FULL[nw.weekday()]}, {fmt_tr(nw.date())}</b><br>{nw.strftime('%H:%M')}
     </div>
 </div>
 <div class='sstrip'>
@@ -553,134 +551,138 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── CALENDAR ──────────────────────────────────────────────────────────────────
-CAT_LABELS = {"difine":"Difine Media","bromfc":"BromFC","manual_match":"Futbol"}
+# ── CALENDAR GRID ────────────────────────────────────────────────────────────
+CAT_LABEL = {"auto":"EKİP","difine":"DİFİNE","bromfc":"BROMFC","manual_match":"FUTBOL"}
+CAT_ICON  = {"auto":"⚽","difine":"","bromfc":"","manual_match":"⚽"}
 
-cols = st.columns(7, gap="small")
+grid = st.columns(7, gap="small")
 
 for i, day in enumerate(week_days):
     is_today = (day == today)
     is_past  = (day < today)
     d_str    = day.isoformat()
+    items    = list(st.session_state.days.get(d_str, []))
+    n        = len(items)
 
-    day_matches = sorted(auto_matches.get(d_str,[]), key=lambda x: x["time"])
-    day_entries = list(st.session_state.entries.get(d_str, []))
+    op  = "0.28" if is_past else ("1.0" if is_today else "0.82")
+    tc  = "dht" if is_today else ""
+    dot = "<span class='tpip'></span>" if is_today else ""
 
-    op = "0.28" if is_past else ("1.0" if is_today else "0.82")
-    tc = "dht" if is_today else ""
-    td_dot = "<span class='tpip'></span>" if is_today else ""
-
-    with cols[i]:
+    with grid[i]:
         with st.container(border=True):
-            st.markdown(f"<div style='opacity:{op};'>", unsafe_allow_html=True)
 
-            # Day header
+            # Day header — standalone, complete HTML, no wrapping divs
             st.markdown(f"""
             <div class='dh {tc}'>
-                <div class='dhn'>{TR_FULL[i]}{td_dot}</div>
-                <div class='dhd'>{day.strftime('%d %b')}</div>
+                <div class='dhn' style='opacity:{op};'>{TR_FULL[i]}{dot}</div>
+                <div class='dhd' style='opacity:{op};'>{day.strftime('%d %b')}</div>
             </div>""", unsafe_allow_html=True)
 
-            # Auto Ekip matches
-            for m in day_matches:
-                ch = chips_html(m["players"])
-
-                if m["status"] == "inprogress":
-                    bdg = "<span class='bdg bl'>● CANLI</span>"
-                    sp  = f" <span class='lsc'>{m['score']}</span>" if m["score"] else ""
-                elif m["status"] == "finished":
-                    bdg = "<span class='bdg bd'>MS</span>"
-                    sp  = f" <b>{m['score']}</b>" if m["score"] else ""
-                else:
-                    bdg = ""
-                    sp  = f" {m['time']}"
-                    try:
-                        mdt = datetime.datetime.strptime(
-                            f"{d_str} {m['time']}", "%Y-%m-%d %H:%M")
-                        dm  = (mdt - nw.replace(tzinfo=None)).total_seconds() / 60
-                        if 0 < dm <= 180:
-                            h  = int(dm // 60)
-                            mn = int(dm % 60)
-                            soon = f"{h}s{mn}dk" if h > 0 else f"{mn}dk"
-                            bdg = f"<span class='bdg bs'>{soon}</span>"
-                    except:
-                        pass
-
-                st.markdown(f"""
-                <div class='acard'>
-                    <div class='albl'>⚽ EKİP {bdg}</div>
-                    <div class='atxt'>{m['home']} – {m['away']}{sp}</div>
-                    {ch}
-                </div>""", unsafe_allow_html=True)
-
-            # Manual entries with ↑ ↓ ✕
             action = None
 
-            for j, entry in enumerate(day_entries):
-                ec  = entry.get("cat","difine")
-                lbl = CAT_LABELS.get(ec, ec)
-                n   = len(day_entries)
+            for j, item in enumerate(items):
+                itype = item.get("type","manual")
+                icat  = item.get("cat", itype)
+                acc   = f"iacc-{icat}"
+                cat_c = f"icat-{icat}"
+                lbl   = CAT_LABEL.get(icat, icat.upper())
+                icon  = CAT_ICON.get(icat,"")
 
-                # Sub line for manual matches
-                if ec == "manual_match":
-                    s_  = entry.get("status","notstarted")
-                    sc  = entry.get("score","")
-                    if s_ == "inprogress":
-                        sub_content = f"<span class='bdg bl'>● CANLI</span> <span class='lsc'>{sc}</span>"
-                    elif s_ == "finished":
-                        sub_content = f"<span class='bdg bd'>MS</span> <b>{sc}</b>"
+                # ── Build badge + score text ──
+                badge = ""
+                score_html = ""
+                if itype == "auto" or icat == "manual_match":
+                    st_ = item.get("status","notstarted")
+                    sc  = item.get("score","")
+                    if st_ == "inprogress":
+                        badge      = "<span class='bdg bl'>● CANLI</span>"
+                        score_html = f"<span class='lsc'> {sc}</span>" if sc else ""
+                    elif st_ == "finished":
+                        badge      = "<span class='bdg bd'>MS</span>"
+                        score_html = f" <b>{sc}</b>" if sc else ""
                     else:
-                        sub_content = entry.get("sub","")
-                    sub_html = f"<div class='msub'>{sub_content}</div>"
+                        # "X dk kaldı" badge
+                        t_str = item.get("time","")
+                        if t_str:
+                            try:
+                                mdt = datetime.datetime.strptime(f"{d_str} {t_str}", "%Y-%m-%d %H:%M")
+                                dm  = (mdt - nw.replace(tzinfo=None)).total_seconds() / 60
+                                if 0 < dm <= 180:
+                                    h=int(dm//60); mn=int(dm%60)
+                                    soon = f"{h}s{mn}dk" if h>0 else f"{mn}dk"
+                                    badge = f"<span class='bdg bs'>{soon}</span>"
+                            except: pass
+                        score_html = f" {t_str}"
+
+                # ── Player chips (auto only) ──
+                ch = chips_html(item.get("players",[])) if itype == "auto" else ""
+
+                # ── Sub line ──
+                if icat == "manual_match":
+                    sub_html = f"<div class='isub'>{item.get('sub','')}</div>"
                 else:
                     sub_html = ""
 
-                # Card + buttons side by side
-                c_card, c_btns = st.columns([10, 1])
+                # ── Complete card HTML (no unclosed tags) ──
+                card_html = f"""
+                <div class='icard' style='opacity:{op};'>
+                    <div class='iacc {acc}'></div>
+                    <div class='ibody'>
+                        <div class='icat {cat_c}'>{icon} {lbl} {badge}</div>
+                        <div class='itxt'>{item.get("text", item.get("home","?") + " – " + item.get("away","?"))}{score_html}</div>
+                        {sub_html}{ch}
+                    </div>
+                </div>"""
+
+                # ── Render card + buttons in columns ──
+                # Auto items: no delete button (but still moveable)
+                can_delete = (itype != "auto")
+
+                if n > 1 or can_delete:
+                    c_card, c_up, c_dn, c_del = st.columns([10, 1, 1, 1])
+                else:
+                    c_card = st.columns([1])[0]
+                    c_up = c_dn = c_del = None
 
                 with c_card:
-                    st.markdown(f"""
-                    <div class='mcard'>
-                        <div class='mac mac-{ec}'></div>
-                        <div class='mhandle'>∶∶</div>
-                        <div class='mbody'>
-                            <div class='mcat mcat-{ec}'>{lbl}</div>
-                            <div class='mtxt'>{entry['text']}</div>
-                            {sub_html}
-                        </div>
-                    </div>""", unsafe_allow_html=True)
+                    st.markdown(card_html, unsafe_allow_html=True)
 
-                with c_btns:
-                    st.markdown("<div class='mbtns-col'>", unsafe_allow_html=True)
-                    if st.button("↑", key=f"u_{entry['id']}", disabled=(j==0)):
-                        action = ("up", j)
-                    if st.button("↓", key=f"d_{entry['id']}", disabled=(j==n-1)):
-                        action = ("down", j)
-                    if st.button("✕", key=f"x_{entry['id']}"):
-                        action = ("del", j)
-                    st.markdown("</div>", unsafe_allow_html=True)
+                if c_up is not None:
+                    with c_up:
+                        if st.button("↑", key=f"u_{d_str}_{j}", disabled=(j==0),
+                                     help="Yukarı taşı"):
+                            action = ("up", j)
+                    with c_dn:
+                        if st.button("↓", key=f"d_{d_str}_{j}", disabled=(j==n-1),
+                                     help="Aşağı taşı"):
+                            action = ("down", j)
+                    with c_del:
+                        if can_delete:
+                            if st.button("✕", key=f"x_{d_str}_{j}", help="Sil"):
+                                action = ("del", j)
+                        else:
+                            st.markdown("&nbsp;", unsafe_allow_html=True)
 
-            st.markdown("</div>", unsafe_allow_html=True)
-
+            # Apply action
             if action:
                 act, j = action
-                el = list(st.session_state.entries.get(d_str, []))
+                el = list(st.session_state.days.get(d_str, []))
                 if act == "del":
                     el.pop(j)
                 elif act == "up" and j > 0:
                     el[j], el[j-1] = el[j-1], el[j]
                 elif act == "down" and j < len(el)-1:
                     el[j], el[j+1] = el[j+1], el[j]
-                st.session_state.entries[d_str] = el
-                save_entries(st.session_state.entries)
+                st.session_state.days[d_str] = el
+                save_data(st.session_state.days)
                 st.rerun()
 
-# ── FOOTER ────────────────────────────────────────────────────────────────────
+# ── FOOTER ───────────────────────────────────────────────────────────────────
 st.markdown(f"""
-<div style='text-align:center;padding:24px 0 6px;
-    border-top:1px solid rgba(255,255,255,0.04);margin-top:20px;'>
-    <span style='font-family:var(--mono);font-size:0.48rem;color:#080d16;
-        letter-spacing:0.12em;text-transform:uppercase;'>
+<div style='text-align:center;padding:22px 0 6px;
+    border-top:1px solid rgba(255,255,255,0.04);margin-top:18px;'>
+    <span style='font-family:var(--mono);font-size:0.46rem;color:#07090f;
+        letter-spacing:0.11em;text-transform:uppercase;'>
         F41DESIGN · TAKVİM · {nw.strftime('%Y')}
     </span>
 </div>
