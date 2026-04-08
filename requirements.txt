@@ -1,3 +1,4 @@
 streamlit
 curl_cffi
 streamlit-autorefresh
+streamlit-sortables
