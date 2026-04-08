@@ -375,39 +375,60 @@ div[data-testid="stTextArea"] textarea {
 div[data-testid="stSelectbox"]>div>div {
     background:var(--s2)!important; border-color:var(--br2)!important;
     font-size:0.67rem!important; }
-div[data-testid="stButton"]>button {
-    font-family:var(--mono)!important; font-size:0.59rem!important;
-    letter-spacing:0.03em; }
 
-/* tighten column gaps */
-[data-testid="stHorizontalBlock"] { gap:3px!important; align-items:start!important; }
-
-/* ── BUTTON STACK — no gap between ↑ and ↓ ── */
-[data-testid="stVerticalBlock"] { gap:0!important; }
-[data-testid="stVerticalBlock"] > div { margin-bottom:0!important; padding-bottom:0!important; }
-
-/* All reorder/delete buttons: small, square, flush */
-[data-testid="stVerticalBlock"] div[data-testid="stButton"] > button {
-    width:22px!important; height:22px!important;
-    min-height:0!important; min-width:0!important;
-    padding:0!important; margin:0 0 1px 0!important;
-    font-size:0.55rem!important; line-height:1!important;
-    border-radius:4px!important;
-    background:rgba(255,255,255,.03)!important;
-    border:1px solid rgba(255,255,255,.1)!important;
-    color:#4a5e72!important;
+/* ── COLUMN LAYOUT ── */
+/* Columns align to top — cards don't stretch to column height */
+[data-testid="stHorizontalBlock"] {
+    gap: 3px !important;
+    align-items: start !important;
 }
-[data-testid="stVerticalBlock"] div[data-testid="stButton"] > button:hover {
-    background:rgba(255,255,255,.09)!important;
-    color:#e8eef8!important;
-    border-color:rgba(255,255,255,.2)!important;
+
+/* ── BUTTON GAP FIX ──
+   Streamlit wraps every widget in [data-testid="element-container"] with margin.
+   We collapse that margin ONLY inside the main content area (not sidebar).
+   The selector targets element-containers that are direct children of
+   stVerticalBlock INSIDE stMain — excluding sidebar.              */
+[data-testid="stMain"] [data-testid="column"]
+  [data-testid="stVerticalBlock"]
+  > [data-testid="element-container"] {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
 }
-/* Keep primary/full-width buttons normal */
-div[data-testid="stButton"] > button[kind="primary"],
-div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
-    width:auto!important; height:auto!important;
-    min-height:38px!important; padding:0.4rem 1rem!important;
-    font-size:0.59rem!important;
+[data-testid="stMain"] [data-testid="column"]
+  [data-testid="stVerticalBlock"] {
+    gap: 2px !important;
+}
+
+/* ── SMALL SQUARE BUTTONS (↑ ↓ ✕) ──
+   Only secondary buttons inside narrow columns get the small style.
+   Primary buttons (sidebar "Ekle" etc.) are excluded by [kind] attr. */
+[data-testid="stMain"] [data-testid="column"]
+  div[data-testid="stButton"] > button[kind="secondary"] {
+    width: 22px !important;
+    height: 22px !important;
+    min-height: 0 !important;
+    min-width: 0 !important;
+    padding: 0 !important;
+    font-size: 0.58rem !important;
+    line-height: 1 !important;
+    border-radius: 4px !important;
+    background: rgba(255,255,255,.03) !important;
+    border: 1px solid rgba(255,255,255,.09) !important;
+    color: #4e6070 !important;
+    font-family: var(--mono) !important;
+    letter-spacing: 0 !important;
+}
+[data-testid="stMain"] [data-testid="column"]
+  div[data-testid="stButton"] > button[kind="secondary"]:hover {
+    background: rgba(255,255,255,.1) !important;
+    color: #e8eef8 !important;
+    border-color: rgba(255,255,255,.22) !important;
+}
+[data-testid="stMain"] [data-testid="column"]
+  div[data-testid="stButton"] > button[kind="secondary"]:disabled {
+    opacity: 0.18 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -620,14 +641,20 @@ for i, day in enumerate(week_days):
                     f"</div></div>"
                 )
 
-                # Layout: [✕] [card] [↑↓]
-                c_del, c_card, c_ud = st.columns([1, 11, 1])
-                with c_del:
-                    if can_del:
+                # Layout:
+                #   deletable  → [✕ | card | ↑↓]  cols [1, 11, 1]
+                #   auto only  → [card | ↑↓]       cols [12, 1]
+                if can_del:
+                    c_del, c_card, c_ud = st.columns([1, 11, 1])
+                    with c_del:
                         if st.button("✕", key=f"x_{d_str}_{j}"):
                             action = ("del", j)
+                else:
+                    c_card, c_ud = st.columns([12, 1])
+
                 with c_card:
                     st.markdown(card_html, unsafe_allow_html=True)
+
                 with c_ud:
                     if st.button("↑", key=f"u_{d_str}_{j}", disabled=(j==0)):
                         action = ("up", j)
