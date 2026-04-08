@@ -8,6 +8,8 @@ st.set_page_config(page_title="F41 · TAKVİM", layout="wide",
                    page_icon="📅", initial_sidebar_state="expanded")
 st_autorefresh(interval=60_000, key="cal_refresh")
 
+st.markdown('<link rel="apple-touch-icon" href="https://emojicdn.elk.sh/📅?style=apple">', unsafe_allow_html=True)
+
 TR_FULL   = ["Pazartesi","Salı","Çarşamba","Perşembe","Cuma","Cumartesi","Pazar"]
 TR_SHORT  = ["Pzt","Sal","Çar","Per","Cum","Cmt","Paz"]
 TR_MONTHS = {1:"Ocak",2:"Şubat",3:"Mart",4:"Nisan",5:"Mayıs",6:"Haziran",
