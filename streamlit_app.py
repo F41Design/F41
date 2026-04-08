@@ -35,7 +35,7 @@ ENTRIES_FILE = "f41_entries.json"
 def safe(s): return html_mod.escape(str(s or ""))
 
 def get_week_days():
-    t = datetime.date.today()
+    t = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)).date()
     return [t - datetime.timedelta(days=t.weekday()) + datetime.timedelta(days=i) for i in range(7)]
 
 def get_week_id(): return get_week_days()[0].isoformat()
@@ -424,7 +424,7 @@ div[data-testid="stSelectbox"]>div>div {
 
 # ── RUNTIME ───────────────────────────────────────────────────────────────────
 week_days   = get_week_days()
-today       = datetime.date.today()
+today       = now_tr().date()
 api_matches = fetch_week(week_days[0].isoformat())
 nw          = now_tr()
 cw          = get_week_id()
